@@ -19,9 +19,24 @@ from fastapi import APIRouter, UploadFile, File, Form, Response
 
 router = APIRouter(prefix="/inference", tags=["inference"])
 
-# ── Model paths ───────────────────────────────────────────────────────────────
-_MODEL_DIR  = Path(r"E:\nsut\dataset\YOLO11-pose-thermal-visual\YOLO11-pose-thermal-visual")
-_MODEL_FILE = _MODEL_DIR / "yolo11s-pose.pt"   # s = fast enough for RTX 3050 real-time
+# ── Model resolution (portable — no hardcoded absolute paths) ─────────────────
+_CANDIDATE_DIRS = [
+    Path(r"E:\nsut\dataset\YOLO11-pose-thermal-visual\YOLO11-pose-thermal-visual"),
+    Path(__file__).resolve().parents[2] / "AI" / "models",
+    Path(__file__).resolve().parents[2],
+    Path.cwd(),
+]
+_MODEL_NAME = "yolo11s-pose.pt"
+
+def _resolve_model_file() -> Path:
+    for d in _CANDIDATE_DIRS:
+        p = d / _MODEL_NAME
+        if p.exists():
+            return p
+    # Not found locally — ultralytics will auto-download to its cache
+    return Path(_MODEL_NAME)
+
+_MODEL_FILE = _resolve_model_file()
 
 # ── Lazy-loaded model (loaded once on first request) ──────────────────────────
 _model      = None

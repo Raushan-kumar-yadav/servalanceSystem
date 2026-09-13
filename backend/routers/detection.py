@@ -26,11 +26,25 @@ from fastapi.responses import StreamingResponse
 
 router = APIRouter(prefix="/detection", tags=["detection"])
 
-# â”€â”€ Model Paths â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Model Paths (portable — falls back to standard pose model) ───────────────
 _THERMAL_MODEL_PATH = Path(r"E:\servelanceSystem\AI\yoloModels\thermal_partial_10k_weights\best.pt")
-_POSE_MODEL_PATH    = Path(r"E:\nsut\dataset\YOLO11-pose-thermal-visual\YOLO11-pose-thermal-visual\yolo11s-pose.pt")
 
-# â”€â”€ Lazy Models â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# Standard pose model — search common locations, auto-download if missing
+_POSE_CANDIDATES = [
+    Path(r"E:\nsut\dataset\YOLO11-pose-thermal-visual\YOLO11-pose-thermal-visual\yolo11s-pose.pt"),
+    Path(__file__).resolve().parents[2] / "AI" / "models" / "yolo11s-pose.pt",
+    Path(__file__).resolve().parents[2] / "yolo11s-pose.pt",
+    Path("yolo11s-pose.pt"),
+]
+def _resolve_pose_path() -> Path:
+    for p in _POSE_CANDIDATES:
+        if p.exists():
+            return p
+    return Path("yolo11s-pose.pt")   # ultralytics auto-download fallback
+
+_POSE_MODEL_PATH = _resolve_pose_path()
+
+# ── Lazy Models ───────────────────────────────────────────────────────────────
 _thermal_model = None
 _pose_model    = None
 _model_lock    = threading.Lock()
@@ -38,23 +52,30 @@ _load_error: Optional[str] = None
 
 def _get_models():
     global _thermal_model, _pose_model, _load_error
-    if _thermal_model is not None:
+    if _pose_model is not None:
         return _thermal_model, _pose_model
     with _model_lock:
-        if _thermal_model is not None:
+        if _pose_model is not None:
             return _thermal_model, _pose_model
         try:
             from ultralytics import YOLO
             import torch
             device = 0 if torch.cuda.is_available() else "cpu"
-            print(f"[Detection] Loading thermal model: {_THERMAL_MODEL_PATH.name}", flush=True)
-            tm = YOLO(str(_THERMAL_MODEL_PATH))
-            dummy = np.zeros((640, 640, 3), dtype=np.uint8)
-            tm.predict(dummy, device=device, verbose=False, imgsz=640)
-            _thermal_model = tm
 
-            if _POSE_MODEL_PATH.exists():
-                print(f"[Detection] Loading pose model: {_POSE_MODEL_PATH.name}", flush=True)
+            # Try thermal model (optional — only on dev machine with dataset)
+            if _THERMAL_MODEL_PATH.exists():
+                print(f"[Detection] Loading thermal model: {_THERMAL_MODEL_PATH.name}", flush=True)
+                tm = YOLO(str(_THERMAL_MODEL_PATH))
+                dummy = np.zeros((640, 640, 3), dtype=np.uint8)
+                tm.predict(dummy, device=device, verbose=False, imgsz=640)
+                _thermal_model = tm
+            else:
+                print(f"[Detection] Thermal model not found — skipping (using pose-only mode)", flush=True)
+
+            # Pose model is REQUIRED
+            print(f"[Detection] Loading pose model: {_POSE_MODEL_PATH.name}", flush=True)
+            pm = YOLO(str(_POSE_MODEL_PATH))
+            dummy = np.zeros((640, 640, 3), dtype=np.uint8)
                 pm = YOLO(str(_POSE_MODEL_PATH))
                 pm.predict(dummy, device=device, verbose=False, imgsz=640)
                 _pose_model = pm
@@ -270,7 +291,7 @@ def _process_frame(cam_id: str, frame: np.ndarray) -> tuple[np.ndarray, dict]:
     """
     import torch
     thermal_model, pose_model = _get_models()
-    if thermal_model is None:
+    if pose_model is None:
         cv2.putText(frame, f"Model error: {_load_error}", (10,30),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,0,255), 2)
         return frame, {"error": _load_error}
